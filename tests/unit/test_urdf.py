@@ -2,7 +2,22 @@ import numpy as np
 import pytest
 import trimesh
 
-from urchin import URDF, Joint, Link, Material, Transmission
+from urchin import URDF, Joint, Link, Material, Transmission, xyz_rpy_to_matrix
+
+
+def _make_multi_dof_urdf():
+    links = [
+        Link("base", None, None, None),
+        Link("floating_link", None, None, None),
+        Link("planar_link", None, None, None),
+        Link("tip", None, None, None),
+    ]
+    joints = [
+        Joint("floating_joint", "floating", "base", "floating_link"),
+        Joint("planar_joint", "planar", "floating_link", "planar_link"),
+        Joint("continuous_joint", "continuous", "planar_link", "tip"),
+    ]
+    return URDF("multi_dof", links, joints)
 
 
 def test_urchin(tmpdir):
@@ -109,3 +124,47 @@ def test_urchin(tmpdir):
     assert isinstance(x, URDF)
     x = x.copy(scale=[1, 1, 3])
     assert isinstance(x, URDF)
+
+
+def test_multi_dof_flat_configurations():
+    robot = _make_multi_dof_urdf()
+    cfgs = np.array(
+        [
+            [0.5, 1.5, 2.5, 0.1, 0.2, 0.3, 3.5, 4.5, 0.4],
+            [-1.0, 2.0, 0.0, -0.3, 0.0, 0.2, 1.0, -2.0, -0.5],
+        ]
+    )
+
+    expected = []
+    for cfg in cfgs:
+        expected.append(
+            robot.link_fk(
+                {
+                    "floating_joint": cfg[:6],
+                    "planar_joint": cfg[6:8],
+                    "continuous_joint": cfg[8],
+                },
+                link="tip",
+            )
+        )
+        assert np.allclose(robot.link_fk(cfg.tolist(), link="tip"), expected[-1])
+        assert np.allclose(robot.link_fk([cfg[:6], cfg[6:8], cfg[8]], link="tip"), expected[-1])
+
+    expected_batch = np.stack(expected)
+    assert np.allclose(robot.link_fk_batch(cfgs, link="tip"), expected_batch)
+    assert np.allclose(
+        robot.link_fk_batch(
+            {
+                "floating_joint": xyz_rpy_to_matrix(cfgs[:, :6]),
+                "planar_joint": cfgs[:, 6:8],
+                "continuous_joint": cfgs[:, 8],
+            },
+            link="tip",
+        ),
+        expected_batch,
+    )
+
+    with pytest.raises(ValueError, match="degree of freedom"):
+        robot.link_fk(np.zeros(3))
+    with pytest.raises(ValueError, match="degree of freedom"):
+        robot.link_fk_batch(np.zeros((2, 3)))
